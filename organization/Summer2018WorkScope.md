@@ -27,16 +27,16 @@ Week | Theme | Notes     | Outcome
 -----|-------|-----------|---------
 June 11 | organization and scope | @vlbailey and @bpbond meet to draft project scope | initial draft of scope document
 June 18 | identify data products | Monday meeting refined scope and identified targeted data products | 1. set up Git Hub repository 2. script download + ingest of ID-ed data products
-June 25| | |
-July 2 | | |
+June 25| visulize data products | |
+July 2 | match locations across data types | |
 July 9 | | @ktoddbrown is out |
 July 16| | @ktoddbrown is out |
-July 23| | |
-July 30| | |
-August 6| | |
-August 13| | |
-August 20| | | 
-August 27| | | Hand off project
+July 23| QA/QC data | |
+July 30| calculate bulk decay | |
+August 6| correct bulk decay for temperature | |
+August 13| visulize decay across precipitation | |
+August 20| documentation | | 
+August 27| hand off project | | 
 
 Current plan is weekly calls/meetings with @vlbailey @bpbond and @ktoddbrown
 
