@@ -209,7 +209,7 @@ for(downloadFile in downloadList){
 #MOD17A3
 ```
 
-```{r loadTemperature}
+```{r loadMet}
 datasetDir <- '~/Documents/Datasets/CPC'
 loadFiles <- list(Tmin=sprintf('%s/tmin.day.ltm.nc', datasetDir),
                   Tmax=sprintf('%s/tmax.day.ltm.nc', datasetDir))
@@ -280,4 +280,10 @@ precipByYear <- data.frame(year = 1979:2017, stringsAsFactors=FALSE) %>%
   })(.))
 
 
+```
+
+```{r}
+ggplot(precipByYear %>% gather(key='key', value='value', -year, -nearLat, -nearLon)) + 
+  geom_line(aes(x=year, y=value, group=sprintf('%d-%d', nearLat, nearLon))) +
+  facet_wrap(~key, scales='free')
 ```
