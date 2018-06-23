@@ -1,0 +1,289 @@
+---
+title: "Create data products"
+author: "K Todd-Brown (ktoddbrown@gmail.com)"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+
+```{r setup}
+library(tidyverse)
+library(ncdf4)
+library(SoilDataR) #library(devtools); install_github("ktoddbrown/soilDataR")
+```
+
+```{r soilData}
+#######ISCN3 - soil carbon, bulk density, clay percentage
+#ISCN3 <- processData_ISCN3(dataDir='~/Documents/Datasets/ISCN_3/', verbose=TRUE)
+#save(ISCN3, file='~/Documents/Datasets/ISCN_3/ISCN3.RData')
+
+load('~/Documents/Datasets/ISCN_3/ISCN3.RData')
+
+##Add new indecies for possible duplications
+ISCN3$field <- ISCN3$field %>% 
+  mutate(fieldID_byString = group_indices(., lat, lon, 
+                                        layer_bottom, layer_top, observation_date)) %>%
+  mutate_at(c('layer_bottom', 'layer_top', 'observation_date'),
+            funs(num=round(as.numeric(as.character(.)), 0))) %>%
+  mutate_at(c('lat', 'lon'), funs(num=round(as.numeric(as.character(.)), 1))) %>%
+  mutate(fieldID_byApprox = group_indices(., lat_num, lon_num, 
+                                         layer_bottom_num, layer_top_num,
+                                   observation_date_num)) %>%
+  select(-ends_with('_num'))
+
+##Identify non-located entries
+noLocation <- ISCN3$field %>%
+  filter(is.na(lat), is.na(lon), 
+         is.na(layer_bottom), is.na(layer_top),
+         is.na(observation_date)) %>%
+  select(ends_with('_name'), starts_with('fieldID')) %>%
+  unique()
+
+##Identify conflicting entries
+problematicFieldEntries <- ISCN3$field %>%
+  filter(!is.na(lat), !is.na(lon), !is.na(layer_bottom), !is.na(layer_top),
+         !is.na(observation_date)) %>% #only look at well defined sites
+  select(-lat, -lon, -layer_bottom, -layer_top, -observation_date, 
+         -fieldID, -fieldID_byApprox) %>% #look at non-identifying columns
+  group_by(fieldID_byString) %>% #group by entry matching
+  gather(key='header', value='value', -fieldID_byString, na.rm=TRUE) %>%
+  group_by(fieldID_byString, header) %>%
+  unique() %>%
+  tally()  %>% #count up number of unique values for that header
+  filter(n > 1) %>% #only care about headers with more then one value
+  select(fieldID_byString) %>% unique %>%
+  left_join(ISCN3$field %>% select(fieldID, fieldID_byString))
+  
+#dim(noLocation)
+#ISCN3$field$fieldID_byString %>% unique %>% length
+#problematicFieldEntries$fieldID_byString %>% unique %>% length
+#problematicFieldEntries %>% arrange(-n) %>% head
+
+##recast the lat-lon as numerics
+ISCN3$field <- ISCN3$field  %>%
+  mutate(lat=as.numeric(lat), lon=as.numeric(lon))
+
+##Add the hard coded units
+hardUnits.df <- ISCN3$ISCNKey %>% filter(type == 'value', !is.na(hardUnit)) %>% select(var, hardUnit)
+ISCN3$measure <-  ISCN3$measure %>% 
+  left_join(select(filter(ISCN3$ISCNKey, type=='value'), var, hardUnit), by='var') %>%
+  mutate(unit=if_else(grepl('\\w', unit) , as.character(unit), hardUnit))
+
+##Check country based on lat/lon
+countryCheck <- ISCN3$field %>%
+  filter(is.finite(lat+lon)) %>%
+  select(lat, lon, country) %>%
+  mutate(country_renamed=recode(country, "United States"="USA",
+                        "Federated States of Micronesia" = "Micronesia",
+                        "Korea, Republic of"="South Korea",
+                        "Congo (Democratic Republic of the)" = 
+                          "Democratic Republic of the Congo",
+                        "Unknown"=as.character(NA))) %>%
+  unique() %>%
+  mutate(mapsID=as.factor(maps::map.where(y=lat, x=lon))) %>%
+  mutate(mapsID=recode(mapsID,
+                       'Puerto Rico'='USA:Puerto Rico',
+                       'Virgin Islands, US:Saint Croix'=
+                         'USA:Virgin Islands, US:Saint Croix',
+                       'Virgin Islands, US:Saint John'=
+                         'USA:Virgin Islands, US:Saint John',
+                       'Virgin Islands, US:Saint Thomas'=
+                         'USA:Virgin Islands, US:Saint Thomas',
+                       'Guam'='USA:Guam')) %>%
+  group_by(country_renamed, country, mapsID) %>%
+  mutate(countryMatch = as.logical(grepl(as.character(country_renamed[1]),
+                                         as.character(mapsID))),
+         onlyOne = xor(is.na(country_renamed), is.na(mapsID)))
+  
+#countryCheck %>% filter(!countryMatch) %>% summary
+#temp <- countryCheck %>% filter(!countryMatch & !onlyOne)
+```
+
+```{r constructLocation}
+soilField <- ISCN3$field %>% 
+  filter(!is.na(lat), !is.na(lon), !is.na(layer_bottom), !is.na(layer_top),
+         !is.na(observation_date)) %>% #only look at well defined sites
+  filter(!(fieldID %in% problematicFieldEntries$fieldID) ) %>% #throw out non-unique field characteristics
+  inner_join(countryCheck %>% 
+              filter(countryMatch | onlyOne) %>% 
+              select(-countryMatch, -onlyOne)) #force lat-lon to have well-defined countries
+
+soilMeasures <- ISCN3$measure %>%
+  filter(grepl('^bd', var) | grepl('^oc', var) | grepl('clay', var)) %>%
+  filter(! (grepl('from horizon type', method) |
+           grepl('from nearby sample', method) |
+           grepl('predicted', method) |
+           grepl('bd.*loi', method) |
+             grepl('model', method) | 
+             grepl('similar horizons', method) |
+             grepl('interpolated', method)))
+
+soil.df <- ISCN3$sample %>% 
+  filter(fieldID %in% soilField$fieldID) %>%
+  filter(measureID %in% soilMeasures$measureID)
+
+uniquePairs <- soil.df %>%
+  select(-value) %>%
+  group_by(fieldID, measureID) %>%
+  tally %>%
+  filter(n == 1)
+
+soil.df <- soil.df %>%
+  right_join(uniquePairs, by=c('fieldID', 'measureID'))
+
+goodFieldID <- soil.df %>% 
+  group_by(fieldID) %>% 
+  summarize(hasClay= 100 %in% measureID, 
+            hasOC = 113 %in% measureID,
+            n = length(measureID)) %>%
+  filter(hasClay, hasOC, n > 2)
+
+temp <- soil.df %>% 
+  filter(fieldID %in% goodFieldID$fieldID) %>% 
+  left_join(soilField) %>%
+  left_join(soilMeasures %>% select(measureID, var)) %>%
+  unite(var_id, var, measureID) %>%
+  spread(var_id, value)
+
+# Bulk density
+# 
+#     bd_samp is the bulk density of the <2mm (fine earth) fraction, in which the mass is expressed on an oven-dry (105 deg) basis. This is the best form of Db for the most uses.
+#     bd_tot is the whole soil bulk density, includes fine earth fraction and rocks.
+#     bd_whole is the bulk density of the whole soil (coarse frags, if present, included), expressed on a 1/3 bar moisture content (a little drier than typical field moist, but not oven-dry). It is collected by the clod method. For a variety of reasons, including the presence of water, possible coarse frags, and the tendency of clods to cleave along pore spaces, this will overestimate Db relative to bd_samp. The SSL standard method here is 4A1d if you want to look it up.
+#     bd_other is, for data contributed by NRCS SSL, the bulk density of the fine earth fraction, but expressed on a field moist condition. It is collected by a volumetric core, but given the presence of some water, will probably usually be an overestimate relative to the bd_samp. This corresponds to the SSL standard method 4A3a. For datasets contributed by sources other than NRCS, bd_other is anyone's guess. Hopefully specified in the associated bd_method variable, or the metadata sheet for that dataset.
+
+temp2 <-   temp %>%  select(-n) %>%
+  gather(key='bulk_density_type', value='bulk_density', 
+         starts_with('bd_'), na.rm=TRUE) 
+
+temp3 <- temp2 %>% filter(grepl('bd_sample', bulk_density_type))
+temp4 <- temp2 %>% filter(grepl('bd_whole', bulk_density_type), !(fieldID %in% temp3$fieldID) )
+temp5 <- temp2 %>% filter(grepl('bd_other', bulk_density_type), !fieldID %in% c(temp3$fieldID, temp4$fieldID))
+temp6 <- temp2 %>% filter(grepl('bd_tot', bulk_density_type), !fieldID %in% c(temp3$fieldID, temp4$fieldID, temp5$fieldID))
+
+soil.df <- temp3 %>% #bind_rows(temp3, temp4, temp5, temp6) %>% 
+  mutate_at(vars(layer_top, layer_bottom, observation_date), as.character) %>%
+   mutate_at(vars(layer_top, layer_bottom, observation_date), as.numeric) %>%
+  filter(layer_top == 0) #only look at the top layer
+```
+
+```{r visualizeSoils}
+mapWorld <- borders("world", colour="gray80", fill="gray80") # create a layer of borders
+ggplot(soil.df) +
+  mapWorld + 
+  geom_hex(aes(x=lon, y=lat), bins=100) + 
+  scale_fill_gradient(trans='log10') +
+  theme_bw() +
+  theme(text=element_text(size=18),
+        axis.title.x = element_blank(), axis.title.y=element_blank())
+
+ggplot(soil.df %>% filter(mapsID == 'USA') )+
+  borders("state", colour="gray80", fill="gray80") + # create a layer of borders
+  geom_hex(aes(x=lon, y=lat), bins=200) + 
+  #scale_fill_gradient(trans='log10') +
+  theme_bw() +
+  theme(text=element_text(size=18),
+        axis.title.x = element_blank(), axis.title.y=element_blank())
+
+GGally::ggpairs(soil.df %>% 
+                  select(oc_113, clay_tot_psa_100, bulk_density)) 
+
+```
+
+```{r downloadMet}
+##This downloads 3.3Gb of data
+downloadList <- c(
+  sprintf('ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_precip/precip.%d.nc', 1979:2018),
+  #sprintf('ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_temp/tmax.%d.nc', 1979:2018),
+  #sprintf('ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_temp/tmin.%d.nc', 1979:2018),
+  'ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_temp/tmax.day.ltm.nc',
+  'ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_temp/tmin.day.ltm.nc')
+
+downloadList <- downloadList[!file.exists( sprintf('~/Documents/Datasets/CPC/%s',
+                                  basename(downloadList)))]
+
+for(downloadFile in downloadList){
+  download.file(downloadFile, 
+              sprintf('~/Documents/Datasets/CPC/%s', basename(downloadFile)))
+}
+
+#MOD17A3
+```
+
+```{r loadMet}
+datasetDir <- '~/Documents/Datasets/CPC'
+loadFiles <- list(Tmin=sprintf('%s/tmin.day.ltm.nc', datasetDir),
+                  Tmax=sprintf('%s/tmax.day.ltm.nc', datasetDir))
+
+tmin.nc <- nc_open(loadFiles$Tmin)
+tmin.lon <- ncvar_get(tmin.nc, varid = "lon")-360*(ncvar_get(tmin.nc, varid = "lon")>180)
+tmin.lat <- ncvar_get(tmin.nc, varid = "lat")
+tmin.value <- ncvar_get(tmin.nc, varid='tmin')
+nc_close(tmin.nc)
+tmax.nc <- nc_open(loadFiles$Tmax)
+tmax.value <- ncvar_get(tmax.nc, varid='tmax')
+nc_close(tmax.nc)
+
+latLon <- soil.df %>% select(lon, lat) %>% unique %>%
+  group_by(lon, lat) %>%
+  mutate(nearLon = which.min(abs(lon-tmin.lon)),
+         nearLat = which.min(abs(lat-tmin.lat))) %>%
+  mutate(t_lon=tmin.lon[nearLon],
+         t_lat=tmin.lat[nearLat],
+         MAT=mean(tmin.value[nearLon, nearLat,]+tmax.value[nearLon, nearLat,])/2)
+
+precipByYear <- data.frame(year = 1979:2017, stringsAsFactors=FALSE) %>%
+  group_by(year) %>%
+  do((function(xx){
+    precip.nc <- nc_open(sprintf('%s/precip.%d.nc', datasetDir, xx$year))
+    tempPrecip <- ncvar_get(precip.nc, varid='precip')
+    nc_close(precip.nc)
+    precipPatterns <- latLon %>%
+      group_by(nearLon, nearLat) %>%
+      select(nearLon, nearLat) %>% unique() %>%
+      do((function(x){
+        precip <- tempPrecip[x$nearLon, x$nearLat,]
+        if(all(is.finite(precip) & precip == 0)){
+          return(data.frame(meanLength_day = 0,
+                            rangeLength_day=0, 
+                            mean_precip=0, 
+                            rangePrecip=0, 
+                            total_precip=0,
+                            eventCount=0))
+        }
+        
+        if(any(is.na(precip))){
+          return(data.frame(meanLength_day = as.numeric(NA),
+                            rangeLength_day= as.numeric(NA), 
+                            mean_precip= as.numeric(NA), 
+                            rangePrecip= as.numeric(NA), 
+                            total_precip= as.numeric(NA),
+                            eventCount= as.numeric(NA)))
+        }
+        
+        #return(data.frame(precip[1]))
+        ans <- data.frame(precip,
+                          eventIndex=cumsum(xor(c(0, precip[-length(precip)]) != 0 , 
+                                                precip !=  0))) %>%
+          group_by(eventIndex) %>%
+          summarize(length_days=length(precip),
+                    tot_precip=sum(precip)) %>%
+          filter(tot_precip != 0) %>%
+          summarize(meanLength_day = mean(length_days),
+                    rangeLength_day=diff(range(length_days)), 
+                    mean_precip=mean(tot_precip), 
+                    rangePrecip=diff(range(tot_precip)), 
+                    total_precip=sum(tot_precip),
+                    eventCount=length(tot_precip))
+        return(ans)
+      })(.))
+    return(precipPatterns)
+  })(.))
+
+
+```
+
+```{r}
+ggplot(precipByYear %>% gather(key='key', value='value', -year, -nearLat, -nearLon)) + 
+  geom_line(aes(x=year, y=value, group=sprintf('%d-%d', nearLat, nearLon))) +
+  facet_wrap(~key, scales='free')
+```
