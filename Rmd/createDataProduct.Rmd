@@ -7,6 +7,7 @@ output: html_document
 
 ```{r setup}
 library(tidyverse)
+library(ncdf4)
 library(SoilDataR) #library(devtools); install_github("ktoddbrown/soilDataR")
 ```
 
@@ -183,6 +184,100 @@ ggplot(soil.df %>% filter(mapsID == 'USA') )+
   theme(text=element_text(size=18),
         axis.title.x = element_blank(), axis.title.y=element_blank())
 
-GGally::ggpairs(soil.df %>% select(oc_113, clay_tot_psa_100, bulk_density))
+GGally::ggpairs(soil.df %>% 
+                  select(oc_113, clay_tot_psa_100, bulk_density)) 
+
+```
+
+```{r downloadMet}
+##This downloads 3.3Gb of data
+downloadList <- c(
+  sprintf('ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_precip/precip.%d.nc', 1979:2018),
+  #sprintf('ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_temp/tmax.%d.nc', 1979:2018),
+  #sprintf('ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_temp/tmin.%d.nc', 1979:2018),
+  'ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_temp/tmax.day.ltm.nc',
+  'ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_temp/tmin.day.ltm.nc')
+
+downloadList <- downloadList[!file.exists( sprintf('~/Documents/Datasets/CPC/%s',
+                                  basename(downloadList)))]
+
+for(downloadFile in downloadList){
+  download.file(downloadFile, 
+              sprintf('~/Documents/Datasets/CPC/%s', basename(downloadFile)))
+}
+
+#MOD17A3
+```
+
+```{r loadTemperature}
+datasetDir <- '~/Documents/Datasets/CPC'
+loadFiles <- list(Tmin=sprintf('%s/tmin.day.ltm.nc', datasetDir),
+                  Tmax=sprintf('%s/tmax.day.ltm.nc', datasetDir))
+
+tmin.nc <- nc_open(loadFiles$Tmin)
+tmin.lon <- ncvar_get(tmin.nc, varid = "lon")-360*(ncvar_get(tmin.nc, varid = "lon")>180)
+tmin.lat <- ncvar_get(tmin.nc, varid = "lat")
+tmin.value <- ncvar_get(tmin.nc, varid='tmin')
+nc_close(tmin.nc)
+tmax.nc <- nc_open(loadFiles$Tmax)
+tmax.value <- ncvar_get(tmax.nc, varid='tmax')
+nc_close(tmax.nc)
+
+latLon <- soil.df %>% select(lon, lat) %>% unique %>%
+  group_by(lon, lat) %>%
+  mutate(nearLon = which.min(abs(lon-tmin.lon)),
+         nearLat = which.min(abs(lat-tmin.lat))) %>%
+  mutate(t_lon=tmin.lon[nearLon],
+         t_lat=tmin.lat[nearLat],
+         MAT=mean(tmin.value[nearLon, nearLat,]+tmax.value[nearLon, nearLat,])/2)
+
+precipByYear <- data.frame(year = 1979:2017, stringsAsFactors=FALSE) %>%
+  group_by(year) %>%
+  do((function(xx){
+    precip.nc <- nc_open(sprintf('%s/precip.%d.nc', datasetDir, xx$year))
+    tempPrecip <- ncvar_get(precip.nc, varid='precip')
+    nc_close(precip.nc)
+    precipPatterns <- latLon %>%
+      group_by(nearLon, nearLat) %>%
+      select(nearLon, nearLat) %>% unique() %>%
+      do((function(x){
+        precip <- tempPrecip[x$nearLon, x$nearLat,]
+        if(all(is.finite(precip) & precip == 0)){
+          return(data.frame(meanLength_day = 0,
+                            rangeLength_day=0, 
+                            mean_precip=0, 
+                            rangePrecip=0, 
+                            total_precip=0,
+                            eventCount=0))
+        }
+        
+        if(any(is.na(precip))){
+          return(data.frame(meanLength_day = as.numeric(NA),
+                            rangeLength_day= as.numeric(NA), 
+                            mean_precip= as.numeric(NA), 
+                            rangePrecip= as.numeric(NA), 
+                            total_precip= as.numeric(NA),
+                            eventCount= as.numeric(NA)))
+        }
+        
+        #return(data.frame(precip[1]))
+        ans <- data.frame(precip,
+                          eventIndex=cumsum(xor(c(0, precip[-length(precip)]) != 0 , 
+                                                precip !=  0))) %>%
+          group_by(eventIndex) %>%
+          summarize(length_days=length(precip),
+                    tot_precip=sum(precip)) %>%
+          filter(tot_precip != 0) %>%
+          summarize(meanLength_day = mean(length_days),
+                    rangeLength_day=diff(range(length_days)), 
+                    mean_precip=mean(tot_precip), 
+                    rangePrecip=diff(range(tot_precip)), 
+                    total_precip=sum(tot_precip),
+                    eventCount=length(tot_precip))
+        return(ans)
+      })(.))
+    return(precipPatterns)
+  })(.))
+
 
 ```
