@@ -28,21 +28,21 @@ ISCN3$field <- ISCN3$field %>%
   mutate(fieldID_byApprox = group_indices(., lat_num, lon_num, 
                                          layer_bottom_num, layer_top_num,
                                    observation_date_num)) %>%
-  select(-ends_with('_num'))
+  dplyr::select(-ends_with('_num'))
 
 ##Identify non-located entries
 noLocation <- ISCN3$field %>%
   filter(is.na(lat), is.na(lon), 
          is.na(layer_bottom), is.na(layer_top),
          is.na(observation_date)) %>%
-  select(ends_with('_name'), starts_with('fieldID')) %>%
+  dplyr::select(ends_with('_name'), starts_with('fieldID')) %>%
   unique()
 
 ##Identify conflicting entries
 problematicFieldEntries <- ISCN3$field %>%
   filter(!is.na(lat), !is.na(lon), !is.na(layer_bottom), !is.na(layer_top),
          !is.na(observation_date)) %>% #only look at well defined sites
-  select(-lat, -lon, -layer_bottom, -layer_top, -observation_date, 
+  dplyr::select(-lat, -lon, -layer_bottom, -layer_top, -observation_date, 
          -fieldID, -fieldID_byApprox) %>% #look at non-identifying columns
   group_by(fieldID_byString) %>% #group by entry matching
   gather(key='header', value='value', -fieldID_byString, na.rm=TRUE) %>%
@@ -50,8 +50,8 @@ problematicFieldEntries <- ISCN3$field %>%
   unique() %>%
   tally()  %>% #count up number of unique values for that header
   filter(n > 1) %>% #only care about headers with more then one value
-  select(fieldID_byString) %>% unique %>%
-  left_join(ISCN3$field %>% select(fieldID, fieldID_byString))
+  dplyr::select(fieldID_byString) %>% unique %>%
+  left_join(ISCN3$field %>% dplyr::select(fieldID, fieldID_byString))
   
 #dim(noLocation)
 #ISCN3$field$fieldID_byString %>% unique %>% length
@@ -63,15 +63,15 @@ ISCN3$field <- ISCN3$field  %>%
   mutate(lat=as.numeric(lat), lon=as.numeric(lon))
 
 ##Add the hard coded units
-hardUnits.df <- ISCN3$ISCNKey %>% filter(type == 'value', !is.na(hardUnit)) %>% select(var, hardUnit)
+hardUnits.df <- ISCN3$ISCNKey %>% filter(type == 'value', !is.na(hardUnit)) %>% dplyr::select(var, hardUnit)
 ISCN3$measure <-  ISCN3$measure %>% 
-  left_join(select(filter(ISCN3$ISCNKey, type=='value'), var, hardUnit), by='var') %>%
+  left_join(dplyr::select(filter(ISCN3$ISCNKey, type=='value'), var, hardUnit), by='var') %>%
   mutate(unit=if_else(grepl('\\w', unit) , as.character(unit), hardUnit))
 
 ##Check country based on lat/lon
 countryCheck <- ISCN3$field %>%
   filter(is.finite(lat+lon)) %>%
-  select(lat, lon, country) %>%
+  dplyr::select(lat, lon, country) %>%
   mutate(country_renamed=recode(country, "United States"="USA",
                         "Federated States of Micronesia" = "Micronesia",
                         "Korea, Republic of"="South Korea",
@@ -105,7 +105,7 @@ soilField <- ISCN3$field %>%
   filter(!(fieldID %in% problematicFieldEntries$fieldID) ) %>% #throw out non-unique field characteristics
   inner_join(countryCheck %>% 
               filter(countryMatch | onlyOne) %>% 
-              select(-countryMatch, -onlyOne)) #force lat-lon to have well-defined countries
+              dplyr::select(-countryMatch, -onlyOne)) #force lat-lon to have well-defined countries
 
 soilMeasures <- ISCN3$measure %>%
   filter(grepl('^bd', var) | grepl('^oc', var) | grepl('clay', var)) %>%
@@ -122,7 +122,7 @@ soil.df <- ISCN3$sample %>%
   filter(measureID %in% soilMeasures$measureID)
 
 uniquePairs <- soil.df %>%
-  select(-value) %>%
+  dplyr::select(-value) %>%
   group_by(fieldID, measureID) %>%
   tally %>%
   filter(n == 1)
@@ -140,7 +140,7 @@ goodFieldID <- soil.df %>%
 temp <- soil.df %>% 
   filter(fieldID %in% goodFieldID$fieldID) %>% 
   left_join(soilField) %>%
-  left_join(soilMeasures %>% select(measureID, var)) %>%
+  left_join(soilMeasures %>% dplyr::select(measureID, var)) %>%
   unite(var_id, var, measureID) %>%
   spread(var_id, value)
 
@@ -151,7 +151,7 @@ temp <- soil.df %>%
 #     bd_whole is the bulk density of the whole soil (coarse frags, if present, included), expressed on a 1/3 bar moisture content (a little drier than typical field moist, but not oven-dry). It is collected by the clod method. For a variety of reasons, including the presence of water, possible coarse frags, and the tendency of clods to cleave along pore spaces, this will overestimate Db relative to bd_samp. The SSL standard method here is 4A1d if you want to look it up.
 #     bd_other is, for data contributed by NRCS SSL, the bulk density of the fine earth fraction, but expressed on a field moist condition. It is collected by a volumetric core, but given the presence of some water, will probably usually be an overestimate relative to the bd_samp. This corresponds to the SSL standard method 4A3a. For datasets contributed by sources other than NRCS, bd_other is anyone's guess. Hopefully specified in the associated bd_method variable, or the metadata sheet for that dataset.
 
-temp2 <-   temp %>%  select(-n) %>%
+temp2 <-   temp %>%  dplyr::select(-n) %>%
   gather(key='bulk_density_type', value='bulk_density', 
          starts_with('bd_'), na.rm=TRUE) 
 
@@ -185,7 +185,7 @@ ggplot(soil.df %>% filter(mapsID == 'USA') )+
         axis.title.x = element_blank(), axis.title.y=element_blank())
 
 GGally::ggpairs(soil.df %>% 
-                  select(oc_113, clay_tot_psa_100, bulk_density)) 
+                  dplyr::select(oc_113, clay_tot_psa_100, bulk_density)) 
 
 ```
 
@@ -206,7 +206,13 @@ for(downloadFile in downloadList){
               sprintf('~/Documents/Datasets/CPC/%s', basename(downloadFile)))
 }
 
+#downloadFile <- "https://e4ftl01.cr.usgs.gov/MOLT/MOD17A3.055/2000.01.01/MOD17A3.A2000001.h00v09.055.2011276104218.hdf"
+#download.file(downloadFile, 
+#              sprintf('~/Documents/Datasets/CPC/%s', basename(downloadFile)))
+#MODIS products need to be downloaded invidually
+#http://neo.sci.gsfc.nasa.gov/servlet/RenderData?si=1197278&cs=gs&format=TIFF&width=3600&height=1800
 #MOD17A3
+#https://neo.sci.gsfc.nasa.gov/view.php?datasetId=MOD17A2_M_PSN&date=2000-12-01
 ```
 
 ```{r loadMet}
@@ -223,7 +229,7 @@ tmax.nc <- nc_open(loadFiles$Tmax)
 tmax.value <- ncvar_get(tmax.nc, varid='tmax')
 nc_close(tmax.nc)
 
-latLon <- soil.df %>% select(lon, lat) %>% unique %>%
+latLon <- soil.df %>% dplyr::select(lon, lat) %>% unique %>%
   group_by(lon, lat) %>%
   mutate(nearLon = which.min(abs(lon-tmin.lon)),
          nearLat = which.min(abs(lat-tmin.lat))) %>%
@@ -239,7 +245,7 @@ precipByYear <- data.frame(year = 1979:2017, stringsAsFactors=FALSE) %>%
     nc_close(precip.nc)
     precipPatterns <- latLon %>%
       group_by(nearLon, nearLat) %>%
-      select(nearLon, nearLat) %>% unique() %>%
+      dplyr::select(nearLon, nearLat) %>% unique() %>%
       do((function(x){
         precip <- tempPrecip[x$nearLon, x$nearLat,]
         if(all(is.finite(precip) & precip == 0)){
@@ -286,4 +292,51 @@ precipByYear <- data.frame(year = 1979:2017, stringsAsFactors=FALSE) %>%
 ggplot(precipByYear %>% gather(key='key', value='value', -year, -nearLat, -nearLon)) + 
   geom_line(aes(x=year, y=value, group=sprintf('%d-%d', nearLat, nearLon))) +
   facet_wrap(~key, scales='free')
+```
+
+Please acknowledge Dr William Kobly Smith (University of Arizona) for their help identifying and interperating the correct data product.
+```{r downloadNPP}
+##Download using wget command below
+##wget -w 0.5 -l 0 -r -nH -np -nc -I /Y2000/*, /Y2000 -R *.html,*.htm http://files.ntsg.umt.edu/data/NTSG_Products/MOD17/MOD17A3/Y2000
+
+#download.file('ftp://ftp.ntsg.umt.edu/pub/MODIS/NTSG_Products/MOD17/MOD17A3/Y2000/', '~/Documents/Datasets/MODIS17A3/Y2000', method='wget', extra=')
+library(raster)
+#library(sp)
+#library(rgdal)
+library(gdalUtils)
+#testFile <- '/Users/todd528/Documents/Datasets/MODIS17A3/data/NTSG_Products/MOD17/MOD17A3/Y2000/MOD17A3.A2000366.h00v08.305.2009342143301.hdf'
+#sds <- get_subdatasets(testFile)
+#library(MODIS)
+#MODIS:::checkTools()
+#sds <- getSds(testFile)
+#r <- raster(testFile)
+
+#http://files.ntsg.umt.edu/data/NTSG_Products/MOD17/GeoTIFF/MOD17A3/GeoTIFF_30arcsec/MOD17A3_Science_NPP_mean_00_15.tif
+#http://files.ntsg.umt.edu/data/NTSG_Products/MOD17/GeoTIFF/MOD17A3/GeoTIFF_30arcsec/MOD17A3_Science_NPP_Qc_mean_00_15.tif
+NPPFile <- "../temp/MOD17A3_Science_NPP_mean_00_15.tif"
+QCFile <- "../temp/MOD17A3_Science_NPP_Qc_mean_00_15.tif"
+#file.exists(NPPFile)
+npp.raster <- raster(x=NPPFile)
+qc.raster <- raster(x=QCFile)
+#npp.raster@file@nodatavalue <- 65535 #reset the -Inf no data value
+npp.df <- soil.df %>% dplyr::select(lat, lon, mapsID) %>% unique %>%
+  mutate(NPP = extract(npp.raster, SpatialPoints(cbind(lon, lat), proj4string=crs(npp.raster))),
+         npp.qc = extract(qc.raster, SpatialPoints(cbind(lon, lat), proj4string=crs(npp.raster)))) #%>% rename(x=lon, y=lat)
+
+plot(npp.raster, xlim=c(-127, -65), ylim=c(23, 52))
+
+ggplot(npp.df) + geom_point(aes(x=NPP, y=npp.qc))
+
+ggplot(npp.df %>% filter(NPP < 6e4)) + geom_histogram(aes(x=NPP))
+
+ggplot(npp.df %>% filter(mapsID == 'USA') )+
+  borders("state", colour="gray80", fill="gray80")  + 
+  #borders("world", colour="gray80", fill="gray80") +# create a layer of borders
+  geom_point(aes(x=lon, y=lat, color=log10(NPP)), size=0.1) + 
+  #geom_point(data=(npp.df %>% filter(NPP > 6e4 | is.na(NPP))), aes(x=lon, y=lat), color='red', size=0.1) +
+  theme_bw() +
+  theme(text=element_text(size=18),
+        axis.title.x = element_blank(), axis.title.y=element_blank())
+
+
 ```
