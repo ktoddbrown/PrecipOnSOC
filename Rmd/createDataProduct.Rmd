@@ -7,18 +7,32 @@ output: html_document
 
 ```{r setup}
 library(tidyverse)
-library(ncdf4)
-library(SoilDataR) #library(devtools); install_github("ktoddbrown/soilDataR")
+library(lubridate)
+library(wordcloud) #make pretty word clouds
+library(ncdf4) #read in netcdf files
+library(raster) #read in geotiff files
+library(gdalUtils) #helper for dealing with raster files
+library(SoilDataR) #library(devtools); install_github("ktoddbrown/soilDataR") #access ISCN soil data
+
+##Modify files below for your system
+ISCN_filename <- '~/Documents/Datasets/ISCN_3/ISCN3.RData'
+met_dir <- '~/Documents/Datasets/CPC'
+workingTemp_dir <- '~/Desktop/Working/PrecipOnSOC/temp'
 ```
 
+# Soil data
+Download and clean the International Soil Carbon Database (v3) data product.
 ```{r soilData}
 #######ISCN3 - soil carbon, bulk density, clay percentage
-#ISCN3 <- processData_ISCN3(dataDir='~/Documents/Datasets/ISCN_3/', verbose=TRUE)
-#save(ISCN3, file='~/Documents/Datasets/ISCN_3/ISCN3.RData')
 
-load('~/Documents/Datasets/ISCN_3/ISCN3.RData')
+if(file.exists('~/Documents/Datasets/ISCN_3/ISCN3.RData')){
+  load(ISCN_filename)
+} else {
+  ISCN3 <- processData_ISCN3(dataDir=dirname(ISCN_filename), verbose=TRUE)
+  save(ISCN3, file='~/Documents/Datasets/ISCN_3/ISCN3.RData')
+}
 
-##Add new indecies for possible duplications
+#### Add new indecies for possible duplications  ####
 ISCN3$field <- ISCN3$field %>% 
   mutate(fieldID_byString = group_indices(., lat, lon, 
                                         layer_bottom, layer_top, observation_date)) %>%
@@ -30,7 +44,7 @@ ISCN3$field <- ISCN3$field %>%
                                    observation_date_num)) %>%
   dplyr::select(-ends_with('_num'))
 
-##Identify non-located entries
+#### Identify non-located entries ####
 noLocation <- ISCN3$field %>%
   filter(is.na(lat), is.na(lon), 
          is.na(layer_bottom), is.na(layer_top),
@@ -38,7 +52,7 @@ noLocation <- ISCN3$field %>%
   dplyr::select(ends_with('_name'), starts_with('fieldID')) %>%
   unique()
 
-##Identify conflicting entries
+#### Identify conflicting entries ####
 problematicFieldEntries <- ISCN3$field %>%
   filter(!is.na(lat), !is.na(lon), !is.na(layer_bottom), !is.na(layer_top),
          !is.na(observation_date)) %>% #only look at well defined sites
@@ -58,17 +72,17 @@ problematicFieldEntries <- ISCN3$field %>%
 #problematicFieldEntries$fieldID_byString %>% unique %>% length
 #problematicFieldEntries %>% arrange(-n) %>% head
 
-##recast the lat-lon as numerics
+#### recast the lat-lon as numerics ####
 ISCN3$field <- ISCN3$field  %>%
   mutate(lat=as.numeric(lat), lon=as.numeric(lon))
 
-##Add the hard coded units
+#### Add the hard coded units ####
 hardUnits.df <- ISCN3$ISCNKey %>% filter(type == 'value', !is.na(hardUnit)) %>% dplyr::select(var, hardUnit)
 ISCN3$measure <-  ISCN3$measure %>% 
   left_join(dplyr::select(filter(ISCN3$ISCNKey, type=='value'), var, hardUnit), by='var') %>%
   mutate(unit=if_else(grepl('\\w', unit) , as.character(unit), hardUnit))
 
-##Check country based on lat/lon
+#### Check country based on lat/lon ####
 countryCheck <- ISCN3$field %>%
   filter(is.finite(lat+lon)) %>%
   dplyr::select(lat, lon, country) %>%
@@ -98,6 +112,7 @@ countryCheck <- ISCN3$field %>%
 #temp <- countryCheck %>% filter(!countryMatch & !onlyOne)
 ```
 
+Filter for sites with bulk density and organic carbon percentage and remove sites that are gap filled or otherwise interpolated. 
 ```{r constructLocation}
 soilField <- ISCN3$field %>% 
   filter(!is.na(lat), !is.na(lon), !is.na(layer_bottom), !is.na(layer_top),
@@ -167,10 +182,9 @@ soil.df <- temp3 %>% #bind_rows(temp3, temp4, temp5, temp6) %>%
 ```
 
 ```{r visualizeSoils}
-mapWorld <- borders("world", colour="gray80", fill="gray80") # create a layer of borders
 ggplot(soil.df) +
-  mapWorld + 
-  geom_hex(aes(x=lon, y=lat), bins=100) + 
+  borders("world", colour="gray80", fill="gray80") + # create a layer of borders
+  geom_hex(aes(x=lon, y=lat), bins=250) + 
   scale_fill_gradient(trans='log10') +
   theme_bw() +
   theme(text=element_text(size=18),
@@ -189,36 +203,28 @@ GGally::ggpairs(soil.df %>%
 
 ```
 
+# Meterological data
 ```{r downloadMet}
-##This downloads 3.3Gb of data
+##This downloads 3.3Gb of data and might take a long time
 downloadList <- c(
   sprintf('ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_precip/precip.%d.nc', 1979:2018),
-  #sprintf('ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_temp/tmax.%d.nc', 1979:2018),
+  #sprintf('ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_temp/tmax.%d.nc', 1979:2018), Only need MAT so don't take years
   #sprintf('ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_temp/tmin.%d.nc', 1979:2018),
   'ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_temp/tmax.day.ltm.nc',
   'ftp://ftp.cdc.noaa.gov/Datasets/cpc_global_temp/tmin.day.ltm.nc')
 
-downloadList <- downloadList[!file.exists( sprintf('~/Documents/Datasets/CPC/%s',
-                                  basename(downloadList)))]
+downloadList <- downloadList[!file.exists(file.path(met_dir, basename(downloadList)))]
 
 for(downloadFile in downloadList){
-  download.file(downloadFile, 
-              sprintf('~/Documents/Datasets/CPC/%s', basename(downloadFile)))
+  download.file(downloadFile, file.path(met_dir, basename(downloadList)))
 }
 
-#downloadFile <- "https://e4ftl01.cr.usgs.gov/MOLT/MOD17A3.055/2000.01.01/MOD17A3.A2000001.h00v09.055.2011276104218.hdf"
-#download.file(downloadFile, 
-#              sprintf('~/Documents/Datasets/CPC/%s', basename(downloadFile)))
-#MODIS products need to be downloaded invidually
-#http://neo.sci.gsfc.nasa.gov/servlet/RenderData?si=1197278&cs=gs&format=TIFF&width=3600&height=1800
-#MOD17A3
-#https://neo.sci.gsfc.nasa.gov/view.php?datasetId=MOD17A2_M_PSN&date=2000-12-01
 ```
 
-```{r loadMet}
-datasetDir <- '~/Documents/Datasets/CPC'
-loadFiles <- list(Tmin=sprintf('%s/tmin.day.ltm.nc', datasetDir),
-                  Tmax=sprintf('%s/tmax.day.ltm.nc', datasetDir))
+Load the mean anaual temperature and find the nearest neighbor to the soil sites.
+```{r loadTemperature}
+loadFiles <- list(Tmin=file.path(met_dir, 'tmin.day.ltm.nc'),
+                  Tmax=file.path(met_dir, 'tmax.day.ltm.nc'))
 
 tmin.nc <- nc_open(loadFiles$Tmin)
 tmin.lon <- ncvar_get(tmin.nc, varid = "lon")-360*(ncvar_get(tmin.nc, varid = "lon")>180)
@@ -229,114 +235,218 @@ tmax.nc <- nc_open(loadFiles$Tmax)
 tmax.value <- ncvar_get(tmax.nc, varid='tmax')
 nc_close(tmax.nc)
 
-latLon <- soil.df %>% dplyr::select(lon, lat) %>% unique %>%
+met.df <- soil.df %>% dplyr::select(lon, lat) %>% unique %>%
   group_by(lon, lat) %>%
   mutate(nearLon = which.min(abs(lon-tmin.lon)),
          nearLat = which.min(abs(lat-tmin.lat))) %>%
   mutate(t_lon=tmin.lon[nearLon],
          t_lat=tmin.lat[nearLat],
          MAT=mean(tmin.value[nearLon, nearLat,]+tmax.value[nearLon, nearLat,])/2)
+```
 
-precipByYear <- data.frame(year = 1979:2017, stringsAsFactors=FALSE) %>%
-  group_by(year) %>%
-  do((function(xx){
-    precip.nc <- nc_open(sprintf('%s/precip.%d.nc', datasetDir, xx$year))
-    tempPrecip <- ncvar_get(precip.nc, varid='precip')
-    nc_close(precip.nc)
-    precipPatterns <- latLon %>%
-      group_by(nearLon, nearLat) %>%
-      dplyr::select(nearLon, nearLat) %>% unique() %>%
-      do((function(x){
-        precip <- tempPrecip[x$nearLon, x$nearLat,]
-        if(all(is.finite(precip) & precip == 0)){
-          return(data.frame(meanLength_day = 0,
-                            rangeLength_day=0, 
-                            mean_precip=0, 
-                            rangePrecip=0, 
-                            total_precip=0,
-                            eventCount=0))
-        }
-        
-        if(any(is.na(precip))){
-          return(data.frame(meanLength_day = as.numeric(NA),
-                            rangeLength_day= as.numeric(NA), 
-                            mean_precip= as.numeric(NA), 
-                            rangePrecip= as.numeric(NA), 
-                            total_precip= as.numeric(NA),
-                            eventCount= as.numeric(NA)))
-        }
-        
-        #return(data.frame(precip[1]))
-        ans <- data.frame(precip,
-                          eventIndex=cumsum(xor(c(0, precip[-length(precip)]) != 0 , 
-                                                precip !=  0))) %>%
-          group_by(eventIndex) %>%
-          summarize(length_days=length(precip),
-                    tot_precip=sum(precip)) %>%
-          filter(tot_precip != 0) %>%
-          summarize(meanLength_day = mean(length_days),
-                    rangeLength_day=diff(range(length_days)), 
-                    mean_precip=mean(tot_precip), 
-                    rangePrecip=diff(range(tot_precip)), 
-                    total_precip=sum(tot_precip),
-                    eventCount=length(tot_precip))
-        return(ans)
-      })(.))
-    return(precipPatterns)
-  })(.))
+Precip is tricker then MAT. 
+Below is a calculation for the Gini index* which is the area bounded by percentage of total annual rainfall (y) vs percentage of time period (x) and the 1:1 line.
+To calculate this we order the precipitation by day, take the cumulative sum of precip and days, normalize this to the total then integrate to come up with this bounded area.
 
+* Rajah et al. "Changes to the temporal distirbution of daily precipitation" GRL (2014) [10.1002/2014GL062156](https://doi.org/10.1002/2014GL062156)
+
+```{r giniPrecip}
+if(file.exists(file.path(workingTemp_dir, 'giniPrecip.RData'))){
+  load(file.path(workingTemp_dir, 'giniPrecip.RData'))
+}else{
+  gini.df <- data.frame()
+  sample.points <- SpatialPoints(coords=cbind(ifelse(met.df$lon < 0, 360 + met.df$lon, met.df$lon), 
+                                                met.df$lat), proj4string = crs(precip.raster))
+  for(yr in (1979:2018)){
+    print(yr)
+    
+    precip.raster <- brick(file.path(met_dir, sprintf('precip.%d.nc', yr)))
+    
+    precip.value <- raster::extract(precip.raster, sample.points, method='simple', df=TRUE) %>% 
+      mutate(lon=met.df$lon, lat=met.df$lat) %>%
+      group_by(ID, lon, lat) %>%
+      gather(key='dateStr', value='precip_mm', starts_with('X')) %>% 
+      #separate(dateStr, into=c('year', 'month', 'mday', 'drop1', 'drop2', 'drop3'), sep='\\.') %>%
+      #select(-starts_with('drop')) %>%
+      dplyr::mutate(year=as.numeric(substr(dateStr, 2, 5)), 
+                    day=lubridate::yday(lubridate::ymd(substr(dateStr,2,11)))) %>%
+      select(-dateStr) %>%
+      dplyr::arrange(ID, precip_mm, .by_group=TRUE) %>%
+      dplyr::mutate(#cumPrecip = cumsum(ifelse(is.finite(precip_mm), precip_mm, 0)),
+        #cumTime = cumsum(is.finite(precip_mm)),
+        precipFrac= cumsum(ifelse(is.finite(precip_mm), precip_mm, 0))/sum(precip_mm, na.rm=TRUE),
+        timeFrac = cumsum(is.finite(precip_mm))/sum(is.finite(precip_mm))) 
+    
+    gini.df <-  precip.value %>%
+      group_by(ID, lat, lon, year) %>%
+      summarize(gini=sum(timeFrac - precipFrac, na.rm=TRUE)/sum(is.finite(precip_mm))*2,
+                TotPrecip=sum(precip_mm, na.rm=TRUE),
+                n=length(timeFrac),
+                finiteCount = sum(is.finite(precip_mm))) %>% 
+      bind_rows(gini.df)
+    
+  }
+  save(gini.df, precip.value, file=file.path(workingTemp_dir, 'giniPrecip.RData'))
+  rm(precip.raster, sample.points)
+}
+
+```
+```{r giniPlots}
+
+shortIDS <- c(5447, 5969, 6054,  5970)
+ggplot(precip.value %>% filter(ID %in% shortIDS)) +
+  geom_segment(aes(x=day, y=precip_mm, xend=day, yend=0, color=as.factor(ID))) +
+  facet_wrap(~ID)
+
+ggplot(precip.value %>% filter(ID %in% shortIDS)) +
+  geom_line(aes(x=timeFrac, y=precipFrac, color=as.factor(ID))) +
+  geom_abline(slope=1)
+
+ggplot(gini.df %>% filter(ID %in% c(5447, 5969, 6054,  5970))) +
+  geom_line(aes(x=year, y=gini, group=ID, color=TotPrecip))
+
+gini.df %>% 
+  filter(ID %in% shortIDS, year == precip.value$year[1])%>%
+  print
+```
+```{r globalGini}
+
+met.df <- gini.df %>% 
+  filter(finiteCount > 0.95*365) %>% #only take years w/ 95%+ completeness
+  summarize(MAP= mean(TotPrecip),
+            precip_years = length(year),
+            MAGini = mean(gini)) %>%
+  full_join(met.df, by=c('lat', 'lon'))
+
+```
+```{r giniGlobalVis}
+ggplot(gini.df %>% filter(finiteCount > 0.95*365)) +
+  geom_boxplot(aes(x=as.factor(year), y=gini)) + theme_bw() +
+  theme(text=element_text(size=18, angle=90),
+        axis.title.x = element_blank())
+
+ggplot(gini.df) +
+  geom_hex(aes(x=gini, y=TotPrecip), bins=100) +
+  scale_fill_gradient(high='#CCCC00', low="#132B43", trans='log10')
+
+ggplot(met.df) +
+  geom_hex(aes(x=MAGini, y=MAP)) +
+  scale_fill_gradient(high='#CCCC00', low="#132B43", trans='log10')
+
+ggplot(met.df) +
+  borders("world", colour="gray80", fill="gray80") + # create a layer of borders
+  geom_point(aes(x=lon, y=lat, color=MAGini), size=0.1) +
+  scale_color_gradient(high='#CCCC00', low="#132B43") +
+  theme_bw() +
+  theme(text=element_text(size=18),
+        axis.title.x = element_blank(), axis.title.y=element_blank())
+
+ggplot(met.df) +
+  borders("world", colour="gray80", fill="gray80") + # create a layer of borders
+  geom_point(aes(x=lon, y=lat, color=MAP), size=0.1) +
+  scale_color_gradient(low='#CCCC00', high="#132B43") +
+  theme_bw() +
+  theme(text=element_text(size=18),
+        axis.title.x = element_blank(), axis.title.y=element_blank())
 
 ```
 
-```{r}
-ggplot(precipByYear %>% gather(key='key', value='value', -year, -nearLat, -nearLon)) + 
-  geom_line(aes(x=year, y=value, group=sprintf('%d-%d', nearLat, nearLon))) +
-  facet_wrap(~key, scales='free')
-```
 
+
+# Net primary production
 Please acknowledge Dr William Kobly Smith (University of Arizona) for their help identifying and interperating the correct data product.
 ```{r downloadNPP}
-##Download using wget command below
-##wget -w 0.5 -l 0 -r -nH -np -nc -I /Y2000/*, /Y2000 -R *.html,*.htm http://files.ntsg.umt.edu/data/NTSG_Products/MOD17/MOD17A3/Y2000
 
-#download.file('ftp://ftp.ntsg.umt.edu/pub/MODIS/NTSG_Products/MOD17/MOD17A3/Y2000/', '~/Documents/Datasets/MODIS17A3/Y2000', method='wget', extra=')
-library(raster)
-#library(sp)
-#library(rgdal)
-library(gdalUtils)
-#testFile <- '/Users/todd528/Documents/Datasets/MODIS17A3/data/NTSG_Products/MOD17/MOD17A3/Y2000/MOD17A3.A2000366.h00v08.305.2009342143301.hdf'
-#sds <- get_subdatasets(testFile)
-#library(MODIS)
-#MODIS:::checkTools()
-#sds <- getSds(testFile)
-#r <- raster(testFile)
-
-#http://files.ntsg.umt.edu/data/NTSG_Products/MOD17/GeoTIFF/MOD17A3/GeoTIFF_30arcsec/MOD17A3_Science_NPP_mean_00_15.tif
-#http://files.ntsg.umt.edu/data/NTSG_Products/MOD17/GeoTIFF/MOD17A3/GeoTIFF_30arcsec/MOD17A3_Science_NPP_Qc_mean_00_15.tif
+npp.filename <- 'http://files.ntsg.umt.edu/data/NTSG_Products/MOD17/GeoTIFF/MOD17A3/GeoTIFF_30arcsec/MOD17A3_Science_NPP_mean_00_15.tif'
+nppqc.filename <- 'http://files.ntsg.umt.edu/data/NTSG_Products/MOD17/GeoTIFF/MOD17A3/GeoTIFF_30arcsec/MOD17A3_Science_NPP_Qc_mean_00_15.tif'
 NPPFile <- "../temp/MOD17A3_Science_NPP_mean_00_15.tif"
 QCFile <- "../temp/MOD17A3_Science_NPP_Qc_mean_00_15.tif"
+
+if(!file.exists(NPPFile)) download.file(npp.filename, NPPFile)
+if(!file.exists(QCFile)) download.file(nppqc.filename, QCFile)
 #file.exists(NPPFile)
 npp.raster <- raster(x=NPPFile)
 qc.raster <- raster(x=QCFile)
 #npp.raster@file@nodatavalue <- 65535 #reset the -Inf no data value
-npp.df <- soil.df %>% dplyr::select(lat, lon, mapsID) %>% unique %>%
-  mutate(NPP = extract(npp.raster, SpatialPoints(cbind(lon, lat), proj4string=crs(npp.raster))),
-         npp.qc = extract(qc.raster, SpatialPoints(cbind(lon, lat), proj4string=crs(npp.raster)))) #%>% rename(x=lon, y=lat)
 
+soil.df <- soil.df %>%
+  mutate(npp = raster::extract(npp.raster, SpatialPoints(cbind(lon, lat), proj4string=crs(npp.raster))),
+         npp.qc = raster::extract(qc.raster, SpatialPoints(cbind(lon, lat), proj4string=crs(npp.raster)))) 
+
+npp.df <- soil.df %>% dplyr::select(lat, lon, mapsID) %>% unique %>%
+  mutate(npp = raster::extract(npp.raster, SpatialPoints(cbind(lon, lat), proj4string=crs(npp.raster))),
+         npp.qc = raster::extract(qc.raster, SpatialPoints(cbind(lon, lat), proj4string=crs(npp.raster)))) #%>% rename(x=lon, y=lat)
+```
+
+```{r plotNPP}
 plot(npp.raster, xlim=c(-127, -65), ylim=c(23, 52))
 
-ggplot(npp.df) + geom_point(aes(x=NPP, y=npp.qc))
+ggplot(npp.df) + geom_point(aes(x=npp, y=npp.qc))
 
-ggplot(npp.df %>% filter(NPP < 6e4)) + geom_histogram(aes(x=NPP))
+ggplot(npp.df %>% filter(npp < 6e4)) + geom_histogram(aes(x=npp))
 
 ggplot(npp.df %>% filter(mapsID == 'USA') )+
   borders("state", colour="gray80", fill="gray80")  + 
   #borders("world", colour="gray80", fill="gray80") +# create a layer of borders
-  geom_point(aes(x=lon, y=lat, color=log10(NPP)), size=0.1) + 
+  geom_point(aes(x=lon, y=lat, color=log10(npp)), size=0.1) + 
   #geom_point(data=(npp.df %>% filter(NPP > 6e4 | is.na(NPP))), aes(x=lon, y=lat), color='red', size=0.1) +
   theme_bw() +
   theme(text=element_text(size=18),
         axis.title.x = element_blank(), axis.title.y=element_blank())
 
+```
 
+# Data analysis
+```{r}
+soil.df <- soil.df %>%
+  dplyr::left_join(met.df, by=c('lon', 'lat')) 
+
+soil.df <- soil.df %>% 
+  mutate(SOC = oc_113/100*bulk_density)
+```
+```{r}
+#0=u-k*Q10*S
+#u=k*Q10*S
+#log(u) = log(k) + log(Q10) + log(S)
+##log(Q10) = (T-15)/10*log(2)
+#log(u) ~ log(S) + T
+#u/(S*Q10)=k
+#u/S=k*Q10
+
+ggplot(soil.df %>% filter(npp < 6e4)) +
+  geom_point(aes(y=SOC, x=(npp/1e4)), alpha=0.1) +
+  scale_y_log10()
+
+ggplot(soil.df %>% filter(npp < 6e4)) +
+  geom_point(aes(y=SOC/(npp*1e-4), x=MAT), alpha=0.1) +
+  scale_y_log10()
+
+ggplot(soil.df %>% filter(npp < 6e4)) +
+  geom_point(aes(y=SOC/(npp*1e-4), x=clay_tot_psa_100), alpha=0.1) +
+  scale_y_log10() +
+  facet_wrap(~hzn, scales='free_x')
+
+ggplot(soil.df %>% filter(npp < 6e4)) +
+  geom_violin(aes(y=SOC/(npp*1e-4), x=factor(round(clay_tot_psa_100/10)))) +
+  scale_y_log10()
+
+ggplot(soil.df %>% filter(npp < 6e4))+
+  geom_point(aes(y=(SOC*2^((MAT-15)/10))/(npp*1e-4), x=clay_tot_psa_100), alpha=0.1) + 
+  scale_y_log10()
+
+```
+
+```{r soilTaxon}
+print(head(soil.df$soil_taxon[5:10]))
+print(paste('Missing soil taxon: ', sum(is.na(soil.df$soil_taxon)), 'of', nrow(soil.df)))
+soilTaxon_words <- data.frame(words=unlist(strsplit(as.character(unique(soil.df$soil_taxon )), split=',?\\s+'))) %>%
+  group_by(words) %>%
+  tally %>% arrange(desc(n))
+print(soilTaxon_words[1:10,])
+wordcloud(words=soilTaxon_words$words[-(1:10)], freq=soilTaxon_words$n[-(1:10)], 
+          min.freq=10, max.words=75, scale=c(3, 0.5), rot.per=0.4)
+```
+
+```{r soilHzn}
+soil.df$hzn %>% summary
 ```
