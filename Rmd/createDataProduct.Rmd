@@ -397,56 +397,41 @@ ggplot(npp.df %>% filter(mapsID == 'USA') )+
 ```
 
 # Data analysis
-```{r}
-soil.df <- soil.df %>%
-  dplyr::left_join(met.df, by=c('lon', 'lat')) 
-
-soil.df <- soil.df %>% 
-  mutate(SOC = oc_113/100*bulk_density)
+```{r makeAnalysisData}
+data.df <- soil.df %>%
+  dplyr::full_join(met.df, by=c('lon', 'lat')) %>% 
+  mutate(SOC = oc_113/100*bulk_density) %>%
+  filter(is.finite(npp) & npp < 6e4 , is.finite(SOC), is.finite(MAT), is.finite(MAP), is.finite(MAGini)) %>%
+  mutate(k_npp=npp/SOC,
+         k_nppQ10 = npp/(SOC*2^((MAT-15)/10)))
 ```
-```{r}
-#0=u-k*Q10*S
-#u=k*Q10*S
-#log(u) = log(k) + log(Q10) + log(S)
-##log(Q10) = (T-15)/10*log(2)
-#log(u) ~ log(S) + T
-#u/(S*Q10)=k
-#u/S=k*Q10
-
-ggplot(soil.df %>% filter(npp < 6e4)) +
-  geom_point(aes(y=SOC, x=(npp/1e4)), alpha=0.1) +
-  scale_y_log10()
-
-ggplot(soil.df %>% filter(npp < 6e4)) +
-  geom_point(aes(y=SOC/(npp*1e-4), x=MAT), alpha=0.1) +
-  scale_y_log10()
-
-ggplot(soil.df %>% filter(npp < 6e4)) +
-  geom_point(aes(y=SOC/(npp*1e-4), x=clay_tot_psa_100), alpha=0.1) +
-  scale_y_log10() +
-  facet_wrap(~hzn, scales='free_x')
-
-ggplot(soil.df %>% filter(npp < 6e4)) +
-  geom_violin(aes(y=SOC/(npp*1e-4), x=factor(round(clay_tot_psa_100/10)))) +
-  scale_y_log10()
-
-ggplot(soil.df %>% filter(npp < 6e4))+
-  geom_point(aes(y=(SOC*2^((MAT-15)/10))/(npp*1e-4), x=clay_tot_psa_100), alpha=0.1) + 
-  scale_y_log10()
+```{r pairWiseComp}
+GGally::ggpairs(data.df, columns=c('MAT', 'MAP', 'MAGini', 'npp', 'SOC'))
+GGally::ggpairs(data.df %>% filter(k_npp < 3e6), columns=c( 'MAT', 'MAP', 'MAGini','k_npp'))
+GGally::ggpairs(data.df %>% filter(k_nppQ10 < 3e6), columns=c('MAP', 'MAGini', 'k_nppQ10'))
 
 ```
+
 
 ```{r soilTaxon}
-print(head(soil.df$soil_taxon[5:10]))
-print(paste('Missing soil taxon: ', sum(is.na(soil.df$soil_taxon)), 'of', nrow(soil.df)))
-soilTaxon_words <- data.frame(words=unlist(strsplit(as.character(unique(soil.df$soil_taxon )), split=',?\\s+'))) %>%
+print(head(data.df$soil_taxon[5:10]))
+print(paste('Missing soil taxon: ', sum(is.na(data.df$soil_taxon)), 'of', nrow(data.df)))
+soilTaxon_words <- data.frame(words=unlist(strsplit(as.character(unique(data.df$soil_taxon )), split=',?\\s+'))) %>%
   group_by(words) %>%
-  tally %>% arrange(desc(n))
+  tally %>% arrange(desc(n)) %>%
+  mutate(clay_dominated=grepl('argi', words),
+         shrink_swell=grepl('(montmor)|(smectit)', words))
+
 print(soilTaxon_words[1:10,])
+print(soilTaxon_words %>% filter(clay_dominated | shrink_swell))
 wordcloud(words=soilTaxon_words$words[-(1:10)], freq=soilTaxon_words$n[-(1:10)], 
           min.freq=10, max.words=75, scale=c(3, 0.5), rot.per=0.4)
-```
 
-```{r soilHzn}
-soil.df$hzn %>% summary
+#data.df %>% mutate(clay_dominated=grepl('argi', soil_taxon),
+#                   shrink_swell=grepl('(montmor)|(smectit)', soil_taxon))
+GGally::ggpairs(data.df %>% filter(k_nppQ10 < 3e6,
+                                   grepl('argi', soil_taxon)), columns=c('MAP', 'MAGini', 'k_nppQ10'))
+GGally::ggpairs(data.df %>% filter(k_nppQ10 < 3e6,
+                                   grepl('(montmor)|(smectit)', soil_taxon)), columns=c('MAP', 'MAGini', 'k_nppQ10'))
+#data.df %>% filter(grepl('(argi)|(montmor)|(smectit)', soil_taxon)) %>% dplyr::select(soil_taxon) %>% unique %>% dplyr::summarise(allTaxon=paste0(soil_taxon, collapse='; ')) %>% unlist %>% print
 ```
