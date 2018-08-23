@@ -2,22 +2,25 @@
 title: "Create data products"
 author: "K Todd-Brown (ktoddbrown@gmail.com)"
 date: "`r format(Sys.time(), '%d %B %Y')`"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
-```{r setup}
+```{r setup, message=FALSE, warning=FALSE}
 library(tidyverse)
 library(lubridate)
 library(wordcloud) #make pretty word clouds
 library(ncdf4) #read in netcdf files
 library(raster) #read in geotiff files
 library(gdalUtils) #helper for dealing with raster files
+library(dplyr)
 library(SoilDataR) #library(devtools); install_github("ktoddbrown/soilDataR") #access ISCN soil data
 
 ##Modify files below for your system
 ISCN_filename <- '~/Documents/Datasets/ISCN_3/ISCN3.RData'
 met_dir <- '~/Documents/Datasets/CPC'
-workingTemp_dir <- '~/Desktop/Working/PrecipOnSOC/temp'
+workingTemp_dir <- '~/Documents/GitHubRepo/PrecipOnSOC/temp'
 ```
 
 # Soil data
@@ -216,7 +219,7 @@ downloadList <- c(
 downloadList <- downloadList[!file.exists(file.path(met_dir, basename(downloadList)))]
 
 for(downloadFile in downloadList){
-  download.file(downloadFile, file.path(met_dir, basename(downloadList)))
+  download.file(downloadFile, file.path(met_dir, basename(downloadFile)))
 }
 
 ```
@@ -255,8 +258,9 @@ if(file.exists(file.path(workingTemp_dir, 'giniPrecip.RData'))){
   load(file.path(workingTemp_dir, 'giniPrecip.RData'))
 }else{
   gini.df <- data.frame()
+  precip.raster <- brick(file.path(met_dir, 'precip.1980.nc'))
   sample.points <- SpatialPoints(coords=cbind(ifelse(met.df$lon < 0, 360 + met.df$lon, met.df$lon), 
-                                                met.df$lat), proj4string = crs(precip.raster))
+                          met.df$lat), proj4string = crs(precip.raster))
   for(yr in (1979:2018)){
     print(yr)
     
@@ -270,7 +274,7 @@ if(file.exists(file.path(workingTemp_dir, 'giniPrecip.RData'))){
       #select(-starts_with('drop')) %>%
       dplyr::mutate(year=as.numeric(substr(dateStr, 2, 5)), 
                     day=lubridate::yday(lubridate::ymd(substr(dateStr,2,11)))) %>%
-      select(-dateStr) %>%
+      dplyr::select(-dateStr) %>%
       dplyr::arrange(ID, precip_mm, .by_group=TRUE) %>%
       dplyr::mutate(#cumPrecip = cumsum(ifelse(is.finite(precip_mm), precip_mm, 0)),
         #cumTime = cumsum(is.finite(precip_mm)),
@@ -359,8 +363,8 @@ Please acknowledge Dr William Kobly Smith (University of Arizona) for their help
 
 npp.filename <- 'http://files.ntsg.umt.edu/data/NTSG_Products/MOD17/GeoTIFF/MOD17A3/GeoTIFF_30arcsec/MOD17A3_Science_NPP_mean_00_15.tif'
 nppqc.filename <- 'http://files.ntsg.umt.edu/data/NTSG_Products/MOD17/GeoTIFF/MOD17A3/GeoTIFF_30arcsec/MOD17A3_Science_NPP_Qc_mean_00_15.tif'
-NPPFile <- "../temp/MOD17A3_Science_NPP_mean_00_15.tif"
-QCFile <- "../temp/MOD17A3_Science_NPP_Qc_mean_00_15.tif"
+NPPFile <- file.path(workingTemp_dir, "MOD17A3_Science_NPP_mean_00_15.tif")
+QCFile <- file.path(workingTemp_dir, "MOD17A3_Science_NPP_Qc_mean_00_15.tif")
 
 if(!file.exists(NPPFile)) download.file(npp.filename, NPPFile)
 if(!file.exists(QCFile)) download.file(nppqc.filename, QCFile)
@@ -373,6 +377,7 @@ soil.df <- soil.df %>%
   mutate(npp = raster::extract(npp.raster, SpatialPoints(cbind(lon, lat), proj4string=crs(npp.raster))),
          npp.qc = raster::extract(qc.raster, SpatialPoints(cbind(lon, lat), proj4string=crs(npp.raster)))) 
 
+#NPP units are in g-C m-2 yr-1
 npp.df <- soil.df %>% dplyr::select(lat, lon, mapsID) %>% unique %>%
   mutate(npp = raster::extract(npp.raster, SpatialPoints(cbind(lon, lat), proj4string=crs(npp.raster))),
          npp.qc = raster::extract(qc.raster, SpatialPoints(cbind(lon, lat), proj4string=crs(npp.raster)))) #%>% rename(x=lon, y=lat)
@@ -388,7 +393,7 @@ ggplot(npp.df %>% filter(npp < 6e4)) + geom_histogram(aes(x=npp))
 ggplot(npp.df %>% filter(mapsID == 'USA') )+
   borders("state", colour="gray80", fill="gray80")  + 
   #borders("world", colour="gray80", fill="gray80") +# create a layer of borders
-  geom_point(aes(x=lon, y=lat, color=log10(npp)), size=0.1) + 
+  geom_point(aes(x=lon, y=lat, color=npp), size=0.1) + 
   #geom_point(data=(npp.df %>% filter(NPP > 6e4 | is.na(NPP))), aes(x=lon, y=lat), color='red', size=0.1) +
   theme_bw() +
   theme(text=element_text(size=18),
@@ -402,13 +407,20 @@ data.df <- soil.df %>%
   dplyr::full_join(met.df, by=c('lon', 'lat')) %>% 
   mutate(SOC = oc_113/100*bulk_density) %>%
   filter(is.finite(npp) & npp < 6e4 , is.finite(SOC), is.finite(MAT), is.finite(MAP), is.finite(MAGini)) %>%
-  mutate(k_npp=npp/SOC,
-         k_nppQ10 = npp/(SOC*2^((MAT-15)/10)))
+  mutate(input=npp*1e-4/(layer_bottom-layer_top)) %>% #convert from gC m-2 yr to gC cm-2 yr and then add depth
+  mutate(k_in=input/SOC,
+         k_inQ10 = input/(SOC*2^((MAT-15)/10)))
 ```
 ```{r pairWiseComp}
-GGally::ggpairs(data.df, columns=c('MAT', 'MAP', 'MAGini', 'npp', 'SOC'))
-GGally::ggpairs(data.df %>% filter(k_npp < 3e6), columns=c( 'MAT', 'MAP', 'MAGini','k_npp'))
-GGally::ggpairs(data.df %>% filter(k_nppQ10 < 3e6), columns=c('MAP', 'MAGini', 'k_nppQ10'))
+ggplot(data.df) + 
+  geom_histogram(aes(x=1/k_in)) + 
+  geom_histogram(aes(x=1/k_inQ10), fill='blue', alpha=0.3) +
+  scale_x_log10() +
+  labs(x='Turnover time [yr]')
+
+GGally::ggpairs(data.df, columns=c('MAT', 'MAP', 'MAGini', 'input', 'SOC'))
+GGally::ggpairs(data.df %>% filter(k_in < 100), columns=c( 'MAT', 'MAP', 'MAGini','k_in'))
+GGally::ggpairs(data.df %>% filter(k_in < 100), columns=c('MAP', 'MAGini', 'k_inQ10'))
 
 ```
 
@@ -429,9 +441,9 @@ wordcloud(words=soilTaxon_words$words[-(1:10)], freq=soilTaxon_words$n[-(1:10)],
 
 #data.df %>% mutate(clay_dominated=grepl('argi', soil_taxon),
 #                   shrink_swell=grepl('(montmor)|(smectit)', soil_taxon))
-GGally::ggpairs(data.df %>% filter(k_nppQ10 < 3e6,
-                                   grepl('argi', soil_taxon)), columns=c('MAP', 'MAGini', 'k_nppQ10'))
-GGally::ggpairs(data.df %>% filter(k_nppQ10 < 3e6,
-                                   grepl('(montmor)|(smectit)', soil_taxon)), columns=c('MAP', 'MAGini', 'k_nppQ10'))
+GGally::ggpairs(data.df %>% filter(k_inQ10 < 3e6,
+                                   grepl('argi', soil_taxon)), columns=c('MAP', 'MAGini', 'k_inQ10'))
+GGally::ggpairs(data.df %>% filter(k_inQ10 < 3e6,
+                                   grepl('(montmor)|(smectit)', soil_taxon)), columns=c('MAP', 'MAGini', 'k_inQ10'))
 #data.df %>% filter(grepl('(argi)|(montmor)|(smectit)', soil_taxon)) %>% dplyr::select(soil_taxon) %>% unique %>% dplyr::summarise(allTaxon=paste0(soil_taxon, collapse='; ')) %>% unlist %>% print
 ```
